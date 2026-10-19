@@ -144,7 +144,35 @@ async function main() {
     // 4. users (auth + profile)
     console.log("\nConfiguring indexes for 'users'...");
     const usersCollection = db.collection('users');
-    await ensureIndex(usersCollection, { email: 1 }, { unique: true, sparse: true });
+    // NOTE: `sparse: true` only omits documents where the email field is
+    // *absent*. The NextAuth MongoDB adapter writes `email: null` for an OAuth
+    // profile with no public email (a GitHub account may have none), so all of
+    // those documents share one null key and the second such sign-in fails with
+    // `E11000 dup key: { email: null }`, which Auth.js reports as an opaque
+    // Configuration error. Uniqueness is therefore limited to real emails, and
+    // a plain index keeps email lookups (credentials login) indexed.
+    try {
+      const existingUserIndexes = await usersCollection.indexes();
+      const legacyEmailIndex = existingUserIndexes.find(
+        (idx) => idx.name === 'email_1' && (idx.sparse === true || idx.unique === true)
+      );
+      if (legacyEmailIndex) {
+        console.log('Dropping legacy users.email index (unique on null blocks OAuth sign-ins)');
+        await usersCollection.dropIndex('email_1');
+      }
+    } catch (e) {
+      console.log('No legacy users.email index to drop or drop failed:', e.message);
+    }
+    await ensureIndex(usersCollection, { email: 1 }, { name: 'email_lookup' });
+    await ensureIndex(
+      usersCollection,
+      { email: 1 },
+      {
+        unique: true,
+        name: 'email_unique_when_present',
+        partialFilterExpression: { email: { $type: 'string' } },
+      }
+    );
 
     // 5. saved_items (dashboard bookmarks)
     console.log("\nConfiguring indexes for 'saved_items'...");
