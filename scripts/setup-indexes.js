@@ -151,28 +151,77 @@ async function main() {
     // `E11000 dup key: { email: null }`, which Auth.js reports as an opaque
     // Configuration error. Uniqueness is therefore limited to real emails, and
     // a plain index keeps email lookups (credentials login) indexed.
-    try {
-      const existingUserIndexes = await usersCollection.indexes();
-      const legacyEmailIndex = existingUserIndexes.find(
+    //
+    // Migration order: the replacement partial unique index is built *first*,
+    // while `email_1` is still enforcing uniqueness, so there is no window in
+    // which concurrent sign-ups could claim the same email. Both steps fail
+    // loudly — a build that cannot guarantee uniqueness, or a legacy index that
+    // cannot be removed, aborts setup instead of reporting success.
+    const EMAIL_UNIQUE_INDEX = 'email_unique_when_present';
+
+    async function requireEmailUniqueIndex(collection) {
+      const existing = (await collection.indexes()).find(
+        (idx) => idx.name === EMAIL_UNIQUE_INDEX
+      );
+      if (existing) {
+        if (existing.unique !== true) {
+          throw new Error(
+            `users.${EMAIL_UNIQUE_INDEX} exists but is not unique — ` +
+              `drop it and re-run this script to rebuild it as a unique index.`
+          );
+        }
+        console.log(`- ${EMAIL_UNIQUE_INDEX}: already present`);
+        return;
+      }
+      try {
+        await collection.createIndex(
+          { email: 1 },
+          {
+            unique: true,
+            name: EMAIL_UNIQUE_INDEX,
+            partialFilterExpression: { email: { $type: 'string' } },
+          }
+        );
+        console.log(`- ${EMAIL_UNIQUE_INDEX}: ${EMAIL_UNIQUE_INDEX}`);
+      } catch (err) {
+        const first = String(err.message || err).split('\n')[0];
+        if (err.code === 11000 || err.codeName === 'DuplicateKey') {
+          throw new Error(
+            `Cannot create unique index users.${EMAIL_UNIQUE_INDEX}: existing users already ` +
+              `share an email address. Locate them with db.users.aggregate([` +
+              `{$match:{email:{$type:"string"}}},{$group:{_id:"$email",count:{$sum:1}}},` +
+              `{$match:{count:{$gt:1}}}]), resolve the duplicates, then re-run this script. (${first})`
+          );
+        }
+        throw new Error(`Cannot create unique index users.${EMAIL_UNIQUE_INDEX}: ${first}`);
+      }
+    }
+
+    async function dropLegacyEmailIndex(collection) {
+      const legacy = (await collection.indexes()).find(
         (idx) => idx.name === 'email_1' && (idx.sparse === true || idx.unique === true)
       );
-      if (legacyEmailIndex) {
-        console.log('Dropping legacy users.email index (unique on null blocks OAuth sign-ins)');
-        await usersCollection.dropIndex('email_1');
+      if (!legacy) return;
+      console.log('Dropping legacy users.email index (unique on null blocks OAuth sign-ins)');
+      try {
+        await collection.dropIndex('email_1');
+      } catch (err) {
+        // Nothing to drop is fine; anything else leaves email-less accounts
+        // blocked by the legacy index, so it must not pass as success.
+        if (err.code === 27 || err.codeName === 'IndexNotFound' || err.codeName === 'NamespaceNotFound') {
+          console.log('- email_1: already removed');
+          return;
+        }
+        throw new Error(
+          `Failed to drop the legacy users.email index (email_1) — GitHub accounts without a ` +
+            `public email will keep failing with E11000 { email: null }. ${String(err.message || err).split('\n')[0]}`
+        );
       }
-    } catch (e) {
-      console.log('No legacy users.email index to drop or drop failed:', e.message);
     }
+
+    await requireEmailUniqueIndex(usersCollection);
+    await dropLegacyEmailIndex(usersCollection);
     await ensureIndex(usersCollection, { email: 1 }, { name: 'email_lookup' });
-    await ensureIndex(
-      usersCollection,
-      { email: 1 },
-      {
-        unique: true,
-        name: 'email_unique_when_present',
-        partialFilterExpression: { email: { $type: 'string' } },
-      }
-    );
 
     // 5. saved_items (dashboard bookmarks)
     console.log("\nConfiguring indexes for 'saved_items'...");

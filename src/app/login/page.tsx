@@ -17,8 +17,13 @@ function getInitialAuthError(errorParam: string | null): string | null {
   } else if (errorParam === 'AccessDenied') {
     return 'Access was denied. Please try again.';
   } else if (errorParam === 'Configuration') {
-    return 'That sign-in provider is not configured on this deployment. Please use email and password, or try again later.';
-  } else if (errorParam === 'OAuthCallback' || errorParam === 'OAuthProviderAccountMismatch') {
+    // Auth.js reports `Configuration` for any server-side config failure, not
+    // only a missing provider, so this must not promise that the email form
+    // still works.
+    return 'Sign-in is not configured correctly on this deployment, so it could not be completed. Please try again later.';
+  } else if (errorParam?.startsWith('OAuth')) {
+    // OAuthCallbackError, OAuthSignInError, OAuthProfileParseError,
+    // OAuthProviderAccountMismatch and friends all mean the same thing here.
     return 'The sign-in with that provider could not be completed. Please try again.';
   } else if (errorParam) {
     return 'Authentication error occurred. Please try again.';
@@ -41,31 +46,45 @@ function LoginFormContent() {
   const [agree, setAgree] = useState(false);
 
   // Providers appear on /api/auth/providers only when their OAuth app
-  // credentials are configured. `null` means "not known yet", so a correctly
-  // configured deployment never flashes an missing button row.
-  const [availableProviders, setAvailableProviders] = useState<Record<string, boolean> | null>(null);
+  // credentials are configured. Rendering is fail-closed: a provider is
+  // offered only after that lookup has actually confirmed it, so nothing can
+  // flash a button that the server would reject, and a failed lookup never
+  // leaves a dead button on screen.
+  const [providerLookup, setProviderLookup] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [availableProviders, setAvailableProviders] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
+  const loadProviders = React.useCallback(() => {
     let cancelled = false;
     fetch('/api/auth/providers')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (cancelled || !data || typeof data !== 'object') return;
+      .then((res) => {
+        if (!res.ok) throw new Error(`Provider lookup failed with status ${res.status}`);
+        return res.json();
+      })
+      .then((data: Record<string, unknown>) => {
+        if (cancelled) return;
         setAvailableProviders({
-          github: Boolean((data as Record<string, unknown>).github),
-          google: Boolean((data as Record<string, unknown>).google),
+          github: Boolean(data.github),
+          google: Boolean(data.google),
         });
+        setProviderLookup('ready');
       })
       .catch(() => {
-        // Leave both buttons visible; the sign-in flow still surfaces errors.
+        if (!cancelled) setProviderLookup('failed');
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
+  useEffect(() => loadProviders(), [loadProviders]);
+
+  const retryProviderLookup = () => {
+    setProviderLookup('loading');
+    loadProviders();
+  };
+
   const socialProviders = (['github', 'google'] as const).filter(
-    (provider) => availableProviders?.[provider] !== false
+    (provider) => providerLookup === 'ready' && availableProviders[provider] === true
   );
 
   const switchMode = (newMode: 'login' | 'signup') => {
@@ -358,6 +377,22 @@ function LoginFormContent() {
           )}
         </div>
       </form>
+
+      {/* Provider lookup failed: say so instead of offering buttons the server did not register */}
+      {providerLookup === 'failed' && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-hairline bg-surface/60 px-3.5 py-3">
+          <span className="text-[11px] text-muted leading-relaxed">
+            Social sign-in could not be verified right now. Please try again.
+          </span>
+          <button
+            type="button"
+            onClick={retryProviderLookup}
+            className="shrink-0 text-[10px] font-semibold font-mono uppercase tracking-widest text-accent hover:underline cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {socialProviders.length > 0 && (
         <>
