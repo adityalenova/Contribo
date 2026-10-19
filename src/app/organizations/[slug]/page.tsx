@@ -10,6 +10,8 @@ import { getProgramById } from '@/lib/repositories/programs';
 import { listProjects } from '@/lib/repositories/projects';
 import { getUserItemStatus } from '@/lib/repositories/dashboard';
 import { OrgDetailPageClient } from '@/components/organizations/OrgDetailPageClient';
+ import { OrgDetailPageClient } from '@/components/organizations/OrgDetailPageClient';
++import { getOrganizationGithubUrl } from '@/lib/organization-links';
 
 const SLUG_REDIRECTS: Record<string, string> = {
   apache: '/organizations/apache-software-foundation',
