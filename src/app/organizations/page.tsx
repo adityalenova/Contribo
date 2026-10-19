@@ -9,6 +9,8 @@ import { listOrganizations } from '@/lib/repositories/organizations';
 import { auth } from '@/auth';
 import { getUserItemStatus } from '@/lib/repositories/dashboard';
 import { getCachedFilterFacets, getCachedPrograms, getCachedDefaultOrganizations } from '@/lib/data-cache';
+ import { OrgDetailPageClient } from '@/components/organizations/OrgDetailPageClient';
++import { getOrganizationGithubUrl } from '@/lib/organization-links';
 
 export const metadata = {
   title: 'Organizations | Contribo',
